@@ -6,16 +6,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -125,6 +128,9 @@ class MiniFileServerTest {
     assertTrue(response.contains("Uploaded"), "Response should confirm upload");
 
     conn.disconnect();
+
+    // Clean up uploaded file
+    Files.deleteIfExists(STORAGE.resolve("test-file.txt"));
   }
 
   /**
@@ -134,7 +140,7 @@ class MiniFileServerTest {
    */
   @Test
   void testDownloadEndpoint() throws Exception {
-    // First, upload a test file
+    // First, create a test file
     Path testFile = STORAGE.resolve("test-download.txt");
     Files.writeString(testFile, "Download test content");
 
@@ -155,23 +161,27 @@ class MiniFileServerTest {
     Files.deleteIfExists(testFile);
   }
 
-  // Handler methods for test server (simplified versions)
+  // Handler methods for test server - must throw IOException only
 
-  private static void handleHealth(HttpExchange exchange) throws Exception {
+  private static void handleHealth(HttpExchange exchange) throws IOException {
     String response = "OK";
     exchange.sendResponseHeaders(200, response.getBytes().length);
-    exchange.getResponseBody().write(response.getBytes());
+    try (OutputStream os = exchange.getResponseBody()) {
+      os.write(response.getBytes());
+    }
     exchange.close();
   }
 
-  private static void handleVersion(HttpExchange exchange) throws Exception {
+  private static void handleVersion(HttpExchange exchange) throws IOException {
     String response = "1.0.0";
     exchange.sendResponseHeaders(200, response.getBytes().length);
-    exchange.getResponseBody().write(response.getBytes());
+    try (OutputStream os = exchange.getResponseBody()) {
+      os.write(response.getBytes());
+    }
     exchange.close();
   }
 
-  private static void handleUpload(HttpExchange exchange) throws Exception {
+  private static void handleUpload(HttpExchange exchange) throws IOException {
     if (!exchange.getRequestMethod().equalsIgnoreCase("POST")) {
       exchange.sendResponseHeaders(405, -1);
       exchange.close();
@@ -186,16 +196,19 @@ class MiniFileServerTest {
     }
 
     Path target = STORAGE.resolve(filename);
-    Files.copy(exchange.getRequestBody(), target,
-        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    try (InputStream in = exchange.getRequestBody()) {
+      Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+    }
 
     String response = "Uploaded: " + filename;
     exchange.sendResponseHeaders(200, response.getBytes().length);
-    exchange.getResponseBody().write(response.getBytes());
+    try (OutputStream os = exchange.getResponseBody()) {
+      os.write(response.getBytes());
+    }
     exchange.close();
   }
 
-  private static void handleDownload(HttpExchange exchange) throws Exception {
+  private static void handleDownload(HttpExchange exchange) throws IOException {
     String query = exchange.getRequestURI().getQuery();
     if (query == null || !query.startsWith("name=")) {
       exchange.sendResponseHeaders(400, -1);
@@ -203,7 +216,7 @@ class MiniFileServerTest {
       return;
     }
 
-    String filename = java.net.URLDecoder.decode(query.substring(5), "UTF-8");
+    String filename = URLDecoder.decode(query.substring(5), StandardCharsets.UTF_8);
     Path file = STORAGE.resolve(filename);
 
     if (!Files.exists(file)) {
@@ -213,7 +226,9 @@ class MiniFileServerTest {
     }
 
     exchange.sendResponseHeaders(200, Files.size(file));
-    Files.copy(file, exchange.getResponseBody());
+    try (OutputStream os = exchange.getResponseBody()) {
+      Files.copy(file, os);
+    }
     exchange.close();
   }
 }

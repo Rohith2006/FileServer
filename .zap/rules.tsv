@@ -1,0 +1,7 @@
+# ZAP Scanning Rules
+# Format: <rule_id> <action> <threshold>
+# Actions: IGNORE, INFO, WARN, FAIL
+# This file allows customization of OWASP ZAP baseline scan rules
+
+# Ignore false positives or low-priority findings
+# Example: 10202 IGNORE (Absence of Anti-CSRF Tokens)

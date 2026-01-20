@@ -1,0 +1,147 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/mini-file-server
+
+jobs:
+  build-and-test:
+    name: Build, Test & Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Stage 1: Linting - Prevents technical debt
+      - name: Run Checkstyle
+        run: mvn checkstyle:check
+        continue-on-error: false
+
+      # Stage 2: Unit Tests - Prevents regressions
+      - name: Run Unit Tests
+        run: mvn test
+
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Maven Tests
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+
+      # Stage 3: CodeQL - Detects OWASP Top 10 issues
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+
+      - name: Build for CodeQL
+        run: mvn clean package -DskipTests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+      # Stage 4: Dependency Check - Identifies supply-chain risks
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'mini-file-server'
+          path: '.'
+          format: 'HTML'
+          args: >
+            --failOnCVSS 7
+            --enableRetired
+
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: reports
+
+      # Stage 5: Build Docker Image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Stage 6: Trivy Scan - Prevents vulnerable images from shipping
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # Stage 7: Container Smoke Test - Ensures image is runnable
+      - name: Container Smoke Test
+        run: |
+          docker run -d --name test-container -p 8080:8080 ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          sleep 10
+          
+          # Test health endpoint
+          response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+          if [ "$response" != "200" ]; then
+            echo "Health check failed with status code: $response"
+            docker logs test-container
+            exit 1
+          fi
+          
+          # Test version endpoint
+          version=$(curl -s http://localhost:8080/version)
+          if [ -z "$version" ]; then
+            echo "Version endpoint failed"
+            docker logs test-container
+            exit 1
+          fi
+          
+          echo "Smoke tests passed! Health: OK, Version: $version"
+          docker stop test-container
+          docker rm test-container
+
+      # Stage 8: Push to DockerHub - Enables downstream CD
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker Image
+        run: |
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+      - name: Image Digest
+        run: |
+          echo "Image pushed successfully!"
+          echo "SHA tag: ${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Latest tag: ${{ env.IMAGE_NAME }}:latest"

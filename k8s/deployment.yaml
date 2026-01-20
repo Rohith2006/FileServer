@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mini-file-server
+  labels:
+    app: mini-file-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mini-file-server
+  template:
+    metadata:
+      labels:
+        app: mini-file-server
+    spec:
+      # Security: Run as non-root user
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+      - name: mini-file-server
+        image: DOCKERHUB_USERNAME/mini-file-server:IMAGE_TAG
+        imagePullPolicy: Always
+
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+
+        # Security: Drop all capabilities and run read-only root filesystem
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+              - ALL
+
+        # Resource limits - Prevents resource exhaustion
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Liveness probe - Restarts unhealthy containers
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # Readiness probe - Routes traffic only to ready pods
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # Volume for persistent storage
+        volumeMounts:
+        - name: storage
+          mountPath: /app/storage
+
+      volumes:
+      - name: storage
+        emptyDir: {}
+
+      # Security: Prevent scheduling on same node for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: mini-file-server
+              topologyKey: kubernetes.io/hostname
